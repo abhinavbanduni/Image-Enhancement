@@ -1,233 +1,166 @@
 import cv2 as cv
 import numpy as np
-import itertools
 import os
 
-# -------------------------------
-# IMAGE ENHANCEMENT FUNCTIONS
-# -------------------------------
+# IMAGE ENHANCING FUNCTIONS
 
 def white_bal(img):
     img_float = img.astype(np.float32)
-    avg_b, avg_g, avg_r = np.mean(img_float[:, :, 0]), np.mean(img_float[:, :, 1]), np.mean(img_float[:, :, 2])
+    avg_b = np.mean(img_float[:, :, 0])
+    avg_g = np.mean(img_float[:, :, 1])
+    avg_r = np.mean(img_float[:, :, 2])
     avg_gray = (avg_b + avg_g + avg_r) / 3
-    scale_b, scale_g, scale_r = avg_gray / avg_b, avg_gray / avg_g, avg_gray / avg_r
+    scale_b = avg_gray / avg_b
+    scale_g = avg_gray / avg_g
+    scale_r = avg_gray / avg_r
     img_float[:, :, 0] *= scale_b
     img_float[:, :, 1] *= scale_g
     img_float[:, :, 2] *= scale_r
-    return np.clip(img_float, 0, 255).astype(np.uint8)
+    balanced = np.clip(img_float, 0, 255).astype(np.uint8)
+    return balanced
 
 def apply_clahe(img):
-    lab = cv.cvtColor(img, cv.COLOR_BGR2LAB)
+    lab = cv.cvtColor(img , cv.COLOR_BGR2LAB)
     l, a, b = cv.split(lab)
-    clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l2 = clahe.apply(l)
-    merged = cv.merge((l2, a, b))
-    return cv.cvtColor(merged, cv.COLOR_LAB2BGR)
+    clahe = cv.createCLAHE(clipLimit=2.0 , tileGridSize=(8,8))
+    l_clahe = clahe.apply(l)
+    merged = cv.merge((l_clahe, a, b))
+    final_img = cv.cvtColor(merged , cv.COLOR_LAB2BGR)
+    return final_img
 
-def dehazing(img, t_min=0.1, w=0.95):
+def dehazing(img , t_min=0.1 , w=0.95):
     dark = cv.min(cv.min(img[:,:,0], img[:,:,1]), img[:,:,2])
     a = np.max(dark)
-    transmission = 1 - w * (dark / (a + 1e-6))
-    transmission = np.clip(transmission, t_min, 1)
-    result = np.empty_like(img, dtype=np.float32)
+    transmission = 1 - w*(dark/a)
+    transmission = np.clip(transmission , t_min , 1)
+    result = np.empty_like(img , dtype=np.float32)
     for c in range(3):
-        result[:,:,c] = (img[:,:,c] - (1 - transmission) * a) / transmission
-    return np.clip(result, 0, 255).astype(np.uint8)
+        result[:,:,c] = (img[:,:,c] - (1-transmission)*a)/ transmission
+    result = np.clip(result,0,255).astype(np.uint8)
+    return result
 
 def gamma_correction(img, gamma=1.5):
-    normalized = img / 255.0
-    corrected = np.power(normalized, 1.0 / gamma)
+    img_normalised = img / 255.0
+    corrected = np.power(img_normalised, (1/gamma))
     return np.uint8(corrected * 255)
 
-# -------------------------------
-# ANALYSIS FUNCTIONS
-# -------------------------------
+# ANALYZING FUNCTIONS
 
 def analyze_image(img):
     gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-    brightness = np.mean(gray)
+    avg_brightness = np.mean(gray)
     contrast = np.std(gray)
-    color_std = np.std(np.mean(img, axis=(0, 1)))
-    haze = np.mean(np.min(img, axis=2))
-    return {"brightness": brightness, "contrast": contrast, "color_std": color_std, "haze": haze}
+    avg_color = np.mean(img, axis=(0, 1))
+    color_std = np.std(avg_color)
+    dark_channel = np.min(img, axis=2)
+    haze_level = np.mean(dark_channel)
 
-def score_image(metrics):
-    return (
-        metrics["contrast"]
-        + (255 - abs(127 - metrics["brightness"])) * 0.5
-        - metrics["haze"] * 0.3
-        + metrics["color_std"] * 0.4
-    )
-
-# -------------------------------
-# DYNAMIC ENHANCER SELECTION
-# -------------------------------
-
-def dynamic_best_enhancer(img):
-    """Tests all enhancer combos (1 to 3 enhancers) and returns best combo + result"""
-    enhancers = {
-        "CLAHE": apply_clahe,
-        "White Balance": white_bal,
-        "Dehazing": dehazing,
-        "Gamma 1.6": lambda x: gamma_correction(x, 1.6),
-        "Gamma 0.8": lambda x: gamma_correction(x, 0.8)
+    return {
+        "brightness": avg_brightness,
+        "contrast": contrast,
+        "color_std": color_std,
+        "haze": haze_level
     }
 
-    best_score = score_image(analyze_image(img))
-    best_result = img
-    best_combo = ["Original"]
+# COMBINATION DECISION
 
-    enhancer_names = list(enhancers.keys())
+def dynamic_enhance_logic(img):
+    metrics = analyze_image(img)
+    brightness = metrics["brightness"]
+    contrast = metrics["contrast"]
+    color_std = metrics["color_std"]
+    haze = metrics["haze"]
 
-    for r in range(1, 4):
-        for combo in itertools.permutations(enhancer_names, r):
-            temp = img.copy()
-            try:
-                for name in combo:
-                    temp = enhancers[name](temp)
-                score = score_image(analyze_image(temp))
-                if score > best_score:
-                    best_score = score
-                    best_result = temp
-                    best_combo = combo
-            except Exception:
-                continue  
+    print(f"Brightness: {brightness:.1f}, Contrast: {contrast:.1f}, Color Std: {color_std:.1f}, Haze: {haze:.1f}")
 
-    return best_result, best_combo, best_score
+    applied = []
+    enhanced = img.copy()
 
-# -------------------------------
+    # Apply based on multiple conditions
+    if color_std > 25:
+        enhanced = white_bal(enhanced)
+        applied.append("White Balance")
+
+    if haze > 100:
+        enhanced = dehazing(enhanced)
+        applied.append("Dehazing")
+
+    if contrast < 40:
+        enhanced = apply_clahe(enhanced)
+        applied.append("CLAHE")
+
+    if brightness < 70:
+        enhanced = gamma_correction(enhanced, gamma=1.6)
+        applied.append("Gamma Correction (BRIGHT)")
+    elif brightness > 180:
+        enhanced = gamma_correction(enhanced, gamma=0.8)
+        applied.append("Gamma Correction(DARK)")
+
+    # If image is overall fine but slightly dull
+    if len(applied) == 0:
+        enhanced = gamma_correction(apply_clahe(enhanced), gamma=1.2)
+        applied = ["CLAHE + Gamma Correction"]
+
+    return enhanced, applied
+
+# IMAGE PROCESSING
+
+def process_image(path):
+    img = cv.imread(path)
+    if img is None:
+        print("NOT ABLE TO READ IMAGE")
+        return
+
+    enhanced, applied = dynamic_enhance_logic(img)
+    print(f"Applied: {', '.join(applied)}")
+
+    cv.imshow(f"Enhanced ({', '.join(applied)})", enhanced)
+    cv.waitKey(0)
+    cv.destroyAllWindows()
+
 # VIDEO PROCESSING
-# -------------------------------
 
 def process_video(path):
     cap = cv.VideoCapture(path)
     if not cap.isOpened():
-        print(" Could not open video.")
+        print("nOT ABLE TO OPEN VIDEO")
         return
 
-    width = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
-    fps = int(cap.get(cv.CAP_PROP_FPS))
+    save_output = True
+    if save_output:
+        fourcc = cv.VideoWriter_fourcc(*'mp4v')
+        out = cv.VideoWriter('enhanced_dynamic_combo_output.mp4', fourcc,
+                             int(cap.get(cv.CAP_PROP_FPS)),
+                             (int(cap.get(cv.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))))
 
-    fourcc = cv.VideoWriter_fourcc(*'mp4v')
-    out_dynamic = cv.VideoWriter('enhanced_dynamic_video.mp4', fourcc, fps, (width, height))
-    out_fixed = cv.VideoWriter('enhanced_best_combo_video.mp4', fourcc, fps, (width, height))
+    print("Dynamic multi-enhancement running... Press 'q' to quit.")
 
     frame_count = 0
-    enhancers = {
-        "CLAHE": apply_clahe,
-        "White Balance": white_bal,
-        "Dehazing": dehazing,
-        "Gamma 1.6": lambda x: gamma_correction(x, 1.6),
-        "Gamma 0.8": lambda x: gamma_correction(x, 0.8)
-    }
-
-    print("🔹 Evaluating best overall combo for full video...")
-    sample_frames = []
-    total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
-    for i in range(0, total_frames, max(1, total_frames // 10)):
-        cap.set(cv.CAP_PROP_POS_FRAMES, i)
-        ret, frame = cap.read()
-        if ret:
-            small = cv.resize(frame, (0,0), fx=0.3, fy=0.3)
-            sample_frames.append(small)
-
-    best_score = -1
-    best_combo_overall = ["CLAHE"]
-    for frame in sample_frames:
-        _, combo, score = dynamic_best_enhancer(frame)
-        if score > best_score:
-            best_score = score
-            best_combo_overall = combo
-    print(f"Overall Best Combo for video: {best_combo_overall}")
-
-    cap.set(cv.CAP_PROP_POS_FRAMES, 0)
-    frame_count = 0
-    dynamic_best_combo = ["CLAHE"]
-
-    print("Processing video frames")
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        if frame_count % 30 == 0:
-            small = cv.resize(frame, (0,0), fx=0.3, fy=0.3)
-            _, combo, score = dynamic_best_enhancer(small)
-            dynamic_best_combo = combo
-            print(f"Frame {frame_count}: Dynamic Combo = {combo}, Score={score:.2f}")
+        enhanced, applied = dynamic_enhance_logic(frame)
+        text = ", ".join(applied)
+        cv.putText(enhanced, text, (20, 40), cv.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv.LINE_AA)
 
-        enhanced_dynamic = frame.copy()
-        for name in dynamic_best_combo:
-            enhanced_dynamic = enhancers[name](enhanced_dynamic)
+        cv.imshow("Enhanced Video (Dynamic Multi)", enhanced)
 
-        enhanced_fixed = frame.copy()
-        for name in best_combo_overall:
-            enhanced_fixed = enhancers[name](enhanced_fixed)
+        if save_output:
+            out.write(enhanced)
 
-        out_dynamic.write(enhanced_dynamic)
-        out_fixed.write(enhanced_fixed)
-
-        cv.imshow("Dynamic Enhancement", enhanced_dynamic)
-        cv.imshow("Fixed Best Combo", enhanced_fixed)
         if cv.waitKey(1) & 0xFF == ord('q'):
             break
 
         frame_count += 1
+        if frame_count % 30 == 0:  # show updates every 30 frames
+            print(f"Frame {frame_count}: {text}")
 
     cap.release()
-    out_dynamic.release()
-    out_fixed.release()
+    if save_output:
+        out.release()
     cv.destroyAllWindows()
-    print("\n Saved videos:")
-    print(" - enhanced_dynamic_video.mp4  (best combo updated dynamically)")
-    print(" - enhanced_best_combo_video.mp4  (single best combo applied to all frames)")
-
-# -------------------------------
-# IMAGE PROCESSING
-# -------------------------------
-
-def process_image(path):
-    img = cv.imread(path)
-    if img is None:
-        print(" Could not read image.")
-        return
-    best_img, combo, score = dynamic_best_enhancer(img)
-    print(f"Best Combo: {combo} | Score: {score:.2f}")
-    cv.imshow(f"Best Combo: {', '.join(combo)}", best_img)
-    cv.waitKey(0)
-    cv.destroyAllWindows()
-
-# -------------------------------
-# MAIN INPUT HANDLER
-# -------------------------------
-
-def process_input(path):
-    if not os.path.exists(path):
-        print(" File not found:", path)
-        return
-
-    ext = os.path.splitext(path)[-1].lower()
-    image_exts = ['.jpg', '.jpeg', '.png', '.bmp']
-    video_exts = ['.mp4', '.avi', '.mov', '.mkv']
-
-    if ext in image_exts:
-        process_image(path)
-    elif ext in video_exts:
-        process_video(path)
-    else:
-        print(" Unsupported file type.")
-
-# -------------------------------
-# MAIN
-# -------------------------------
-
-if __name__ == "__main__":
-    path = input("Enter image or video path: ").strip()
-    process_input(path)
-
-
 
 
 
@@ -252,7 +185,3 @@ def process_input(path):
 if __name__ == "__main__":
     path = input("Enter path of image or video: ").strip()
     process_input(path)
-
-Gemini
-Gemini in Drive doesn't support text files
-Gemini in Workspace can make mistakes, so double-check responses. Learn more
